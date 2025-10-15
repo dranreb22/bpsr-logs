@@ -2,7 +2,7 @@ use crate::live::opcodes_models;
 use crate::live::opcodes_models::class::{
     ClassSpec, get_class_id_from_spec, get_class_spec_from_skill_id,
 };
-use crate::live::opcodes_models::{Encounter, Entity, Skill, attr_type};
+use crate::live::opcodes_models::{Encounter, Entity, Skill, attr_type, DamageEvent};
 use crate::packets::utils::BinaryReader;
 use blueprotobuf_lib::blueprotobuf;
 use blueprotobuf_lib::blueprotobuf::{Attr, EDamageType, EEntityType};
@@ -24,6 +24,8 @@ pub fn process_sync_near_entities(
         let target_uid = target_uuid >> 16;
         let target_entity_type = EEntityType::from(target_uuid);
 
+        // If this is a character's summon, try to map to owner from attrs if present later
+
         let target_entity = encounter
             .entity_uid_to_entity
             .entry(target_uid)
@@ -33,6 +35,7 @@ pub fn process_sync_near_entities(
         match target_entity_type {
             EEntityType::EntChar => {
                 process_player_attrs(target_entity, target_uid, pkt_entity.attrs?.attrs);
+                reconcile_entity_metadata(encounter, target_uid);
             }
             // EEntityType::EntMonster => {process_monster_attrs();} // todo
             _ => {}
@@ -58,6 +61,9 @@ pub fn process_sync_container_data(
     target_entity.class_id = v_data.profession_list?.cur_profession_id?;
     target_entity.ability_score = char_base.fight_point?;
     target_entity.level = v_data.role_level?.level?;
+
+    // Reconcile recent events for this entity now that metadata is present
+    reconcile_entity_metadata(encounter, player_uid);
 
     Some(())
 }
@@ -122,10 +128,23 @@ pub fn process_aoi_sync_delta(
             continue; // skip this iteration
         };
 
+        // Learn summon ownership if both ids present
+        if let (Some(top), Some(att)) = (sync_damage_info.top_summoner_id, sync_damage_info.attacker_uuid) {
+            let owner_uid = top >> 16;
+            let summon_uid = att >> 16;
+            if owner_uid != summon_uid {
+                encounter.summon_uid_to_owner_uid.insert(summon_uid, owner_uid);
+            }
+        }
+
         let attacker_uuid = sync_damage_info
             .top_summoner_id
             .or(sync_damage_info.attacker_uuid)?;
-        let attacker_uid = attacker_uuid >> 16;
+        let mut attacker_uid = attacker_uuid >> 16;
+        // If we have an owner mapping for this attacker (summon), attribute to owner
+        if let Some(owner_uid) = encounter.summon_uid_to_owner_uid.get(&attacker_uid) {
+            attacker_uid = *owner_uid;
+        }
         let attacker_entity = encounter
             .entity_uid_to_entity
             .entry(attacker_uid)
@@ -171,10 +190,19 @@ pub fn process_aoi_sync_delta(
             attacker_entity.total_heal += actual_value;
             skill.hits += 1;
             skill.total_value += actual_value;
-            info!(
-                "heal packet: {attacker_uid} to {target_uid}: {actual_value} heal {} total heal",
-                skill.total_value
-            );
+            // Buffer event for reconciliation
+            if encounter.recent_events.len() == encounter.recent_events.capacity() {
+                let _ = encounter.recent_events.pop_front();
+            }
+            encounter.recent_events.push_back(DamageEvent {
+                attacker_uid,
+                target_uid,
+                skill_uid,
+                value: actual_value,
+                is_heal: true,
+                is_crit,
+                is_lucky,
+            });
         } else {
             let skill = attacker_entity
                 .skill_uid_to_dmg_skill
@@ -202,22 +230,36 @@ pub fn process_aoi_sync_delta(
             attacker_entity.total_dmg += actual_value;
             skill.hits += 1;
             skill.total_value += actual_value;
-            info!(
-                "dmg packet: {attacker_uid} to {target_uid}: {actual_value} dmg {} total dmg",
-                skill.total_value
-            );
+            // Buffer event for reconciliation
+            if encounter.recent_events.len() == encounter.recent_events.capacity() {
+                let _ = encounter.recent_events.pop_front();
+            }
+            encounter.recent_events.push_back(DamageEvent {
+                attacker_uid,
+                target_uid,
+                skill_uid,
+                value: actual_value,
+                is_heal: false,
+                is_crit,
+                is_lucky,
+            });
         }
     }
 
     // Figure out timestamps
-    let timestamp_ms = SystemTime::now()
+    let local_timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_millis();
+    let server_adjusted_timestamp_ms = if encounter.server_time_offset_ms != 0 {
+        local_timestamp_ms.saturating_add_signed(encounter.server_time_offset_ms)
+    } else {
+        local_timestamp_ms
+    };
     if encounter.time_fight_start_ms == Default::default() {
-        encounter.time_fight_start_ms = timestamp_ms;
+        encounter.time_fight_start_ms = server_adjusted_timestamp_ms;
     }
-    encounter.time_last_combat_packet_ms = timestamp_ms;
+    encounter.time_last_combat_packet_ms = server_adjusted_timestamp_ms;
     Some(())
 }
 
@@ -233,26 +275,56 @@ fn process_player_attrs(player_entity: &mut Entity, target_uid: i64, attrs: Vec<
             attr_type::ATTR_NAME => {
                 // todo: fix these brackets
                 raw_bytes.remove(0); // not sure why, there's some weird character as the first e.g. "\u{6}Sketal"
-                let player_name = BinaryReader::from(raw_bytes).read_string().unwrap();
-                player_entity.name = player_name;
+                if let Ok(player_name) = BinaryReader::from(raw_bytes).read_string() {
+                    player_entity.name = player_name;
+                }
                 info! {"Found player {} with UID {}", player_entity.name, target_uid}
             }
             #[allow(clippy::cast_possible_truncation)]
             attr_type::ATTR_PROFESSION_ID => {
-                player_entity.class_id =
-                    prost::encoding::decode_varint(&mut raw_bytes.as_slice()).unwrap() as i32;
+                if let Ok(val) = prost::encoding::decode_varint(&mut raw_bytes.as_slice()) {
+                    player_entity.class_id = val as i32;
+                }
             }
             #[allow(clippy::cast_possible_truncation)]
             attr_type::ATTR_FIGHT_POINT => {
-                player_entity.ability_score =
-                    prost::encoding::decode_varint(&mut raw_bytes.as_slice()).unwrap() as i32;
+                if let Ok(val) = prost::encoding::decode_varint(&mut raw_bytes.as_slice()) {
+                    player_entity.ability_score = val as i32;
+                }
             }
             #[allow(clippy::cast_possible_truncation)]
             attr_type::ATTR_LEVEL => {
-                player_entity.level =
-                    prost::encoding::decode_varint(&mut raw_bytes.as_slice()).unwrap() as i32;
+                if let Ok(val) = prost::encoding::decode_varint(&mut raw_bytes.as_slice()) {
+                    player_entity.level = val as i32;
+                }
             }
             _ => (),
+        }
+    }
+}
+
+fn reconcile_entity_metadata(encounter: &mut Encounter, uid: i64) {
+    let Some(entity) = encounter.entity_uid_to_entity.get_mut(&uid) else { return };
+
+    // If spec is unknown, try to infer from recent events' skills
+    if entity.class_spec == ClassSpec::Unknown {
+        if let Some(event) = encounter
+            .recent_events
+            .iter()
+            .rev()
+            .find(|e| e.attacker_uid == uid)
+        {
+            let inferred = get_class_spec_from_skill_id(event.skill_uid);
+            if inferred != ClassSpec::Unknown {
+                entity.class_spec = inferred;
+                entity.class_id = get_class_id_from_spec(inferred);
+            }
+        }
+    } else {
+        // If spec conflicts with authoritative class_id, prefer class_id and reset spec
+        let inferred_id = get_class_id_from_spec(entity.class_spec);
+        if entity.class_id != 0 && inferred_id != 0 && inferred_id != entity.class_id {
+            entity.class_spec = ClassSpec::Unknown;
         }
     }
 }

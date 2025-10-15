@@ -50,8 +50,9 @@ pub fn disable_blur(app: tauri::AppHandle) {
 pub fn copy_sync_container_data(app: tauri::AppHandle) {
     let state = app.state::<EncounterMutex>();
     let encounter = state.lock().unwrap();
-    let json = serde_json::to_string_pretty(&encounter.local_player).unwrap();
-    app.clipboard().write_text(json).unwrap();
+    if let Ok(json) = serde_json::to_string_pretty(&encounter.local_player) {
+        let _ = app.clipboard().write_text(json);
+    }
 }
 
 #[tauri::command]
@@ -450,7 +451,9 @@ pub fn get_dps_skill_window(
     state: tauri::State<'_, EncounterMutex>,
     player_uid_str: &str,
 ) -> Result<SkillsWindow, String> {
-    let player_uid: i64 = player_uid_str.parse().unwrap();
+    let Ok(player_uid) = player_uid_str.parse::<i64>() else {
+        return Err("Invalid player uid".to_string());
+    };
     let encounter = state.lock().unwrap();
 
     let entity = encounter
@@ -608,7 +611,9 @@ pub fn get_heal_skill_window(
     state: tauri::State<'_, EncounterMutex>,
     player_uid_str: &str,
 ) -> Result<SkillsWindow, String> {
-    let player_uid: i64 = player_uid_str.parse().unwrap();
+    let Ok(player_uid) = player_uid_str.parse::<i64>() else {
+        return Err("Invalid player uid".to_string());
+    };
     let encounter = state.lock().unwrap();
 
     let entity = encounter

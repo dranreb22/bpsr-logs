@@ -1,12 +1,12 @@
 use crate::live::opcodes_models::class::ClassSpec;
 use blueprotobuf_lib::blueprotobuf::{EEntityType, SyncContainerData};
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, Mutex};
 use windivert::WinDivert;
 use windivert::layer::NetworkLayer;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Encounter {
     pub is_encounter_paused: bool,
     pub time_last_combat_packet_ms: u128, // in ms
@@ -16,6 +16,41 @@ pub struct Encounter {
     pub local_player_uid: i64,
     pub entity_uid_to_entity: HashMap<i64, Entity>, // key: entity uid
     pub local_player: SyncContainerData,
+    // Estimated server time offset in milliseconds (server_ms - client_ms)
+    pub server_time_offset_ms: i128,
+    // Recent events buffer for metadata reconciliation
+    pub recent_events: VecDeque<DamageEvent>,
+    // Map pet/summon uid -> owner player uid
+    pub summon_uid_to_owner_uid: HashMap<i64, i64>,
+}
+
+impl Default for Encounter {
+    fn default() -> Self {
+        Self {
+            is_encounter_paused: false,
+            time_last_combat_packet_ms: 0,
+            time_fight_start_ms: 0,
+            total_dmg: 0,
+            total_heal: 0,
+            local_player_uid: 0,
+            entity_uid_to_entity: HashMap::new(),
+            local_player: SyncContainerData::default(),
+            server_time_offset_ms: 0,
+            recent_events: VecDeque::with_capacity(1024),
+            summon_uid_to_owner_uid: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DamageEvent {
+    pub attacker_uid: i64,
+    pub target_uid: i64,
+    pub skill_uid: i32,
+    pub value: u128,
+    pub is_heal: bool,
+    pub is_crit: bool,
+    pub is_lucky: bool,
 }
 
 pub type EncounterMutex = Mutex<Encounter>;

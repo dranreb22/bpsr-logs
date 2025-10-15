@@ -94,17 +94,18 @@ pub async fn start(app_handle: AppHandle) {
                 }
             }
             packets::opcodes::Pkt::SyncServerTime => {
-                // info!("Received {op:?}");
-                // trace!("Received {op:?} and data {data:?}");
-                let _sync_server_time =
-                    match blueprotobuf::SyncServerTime::decode(Bytes::from(data)) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("Error decoding SyncServerTime.. ignoring: {e}");
-                            continue;
-                        }
-                    };
-                // todo: this is skipped, not sure what info it has
+                let sync_server_time = match blueprotobuf::SyncServerTime::decode(Bytes::from(data)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("Error decoding SyncServerTime.. ignoring: {e}");
+                        continue;
+                    }
+                };
+                if let (Some(client_ms), Some(server_ms)) = (sync_server_time.client_milliseconds, sync_server_time.server_milliseconds) {
+                    let encounter_state = app_handle.state::<EncounterMutex>();
+                    let mut encounter_state = encounter_state.lock().unwrap();
+                    encounter_state.server_time_offset_ms = (server_ms as i128) - (client_ms as i128);
+                }
             }
             packets::opcodes::Pkt::SyncToMeDeltaInfo => {
                 // todo: fix this, attrs dont include name, no idea why
