@@ -8,7 +8,7 @@ use blueprotobuf_lib::blueprotobuf;
 use bytes::Bytes;
 use log::{error, info, trace, warn};
 use prost::Message;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Emitter};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,7 @@ pub async fn start(app_handle: AppHandle) {
         let last_rx_time = last_rx_time.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                tauri::async_runtime::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
                 let since = {
                     let locked = last_rx_time.lock().unwrap();
                     locked.elapsed()
@@ -50,7 +50,7 @@ pub async fn start(app_handle: AppHandle) {
             *locked = Instant::now();
         }
         // notify frontend listeners that a packet was received
-        let _ = app_handle.emit_all("packet_rx", ());
+        let _ = app_handle.emit("packet_rx", ());
         {
             let state = app_handle.state::<EncounterMutex>();
             let encounter = state.lock().unwrap();
