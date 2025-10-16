@@ -15,6 +15,7 @@
   import { takeScreenshot, tooltip } from "$lib/utils.svelte";
   import AbbreviatedNumber from "$lib/components/abbreviated-number.svelte";
   import { emitTo } from "@tauri-apps/api/event";
+  import { listen } from "@tauri-apps/api/event";
   import { settings } from "$lib/settings-store";
 
   onMount(() => {
@@ -52,12 +53,19 @@
     elapsedMs: 0,
   });
   let isEncounterPaused = $state(false);
+  let liveBlink = $state(false);
   const {
     screenshotDiv,
   }: {
     screenshotDiv?: HTMLElement;
   } = $props();
   const appWindow = getCurrentWebviewWindow();
+
+  // Blink a small live dot whenever backend receives packets
+  listen("packet_rx", () => {
+    liveBlink = true;
+    setTimeout(() => (liveBlink = false), 150);
+  });
 
   async function openSettings() {
     const mainWindow = await WebviewWindow.getByLabel("main");
@@ -86,6 +94,9 @@
   </span>
   <!-- Right side -->
   <span class="flex gap-1">
+    <span class="flex items-center" title="Live capture status">
+      <span class={`inline-block size-2 rounded-full ${liveBlink ? 'bg-green-400' : 'bg-neutral-600'}`}></span>
+    </span>
     <!-- TODO: add responsive clicks, toaster -->
     <button
       onclick={async () => {
