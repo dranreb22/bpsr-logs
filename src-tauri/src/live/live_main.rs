@@ -8,9 +8,7 @@ use blueprotobuf_lib::blueprotobuf;
 use bytes::Bytes;
 use log::{error, info, trace, warn};
 use prost::Message;
-use tauri::{AppHandle, Manager, Emitter};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use tauri::{AppHandle, Manager};
 
 pub async fn start(app_handle: AppHandle) {
     // todo: add app_handle?
@@ -18,39 +16,8 @@ pub async fn start(app_handle: AppHandle) {
     // 1. Start capturing packets and send to rx
     let mut rx = packets::packet_capture::start_capture(); // Since live meter is not critical, it's ok to just log it // TODO: maybe bubble an error up to the frontend instead?
 
-    // Watchdog for stalled capture during active encounters
-    let last_rx_time = Arc::new(Mutex::new(Instant::now()));
-    {
-        let app_handle = app_handle.clone();
-        let last_rx_time = last_rx_time.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                let since = {
-                    let locked = last_rx_time.lock().unwrap();
-                    locked.elapsed()
-                };
-                if since > Duration::from_secs(5) {
-                    let state = app_handle.state::<EncounterMutex>();
-                    let encounter = state.lock().unwrap();
-                    if !encounter.is_encounter_paused && (encounter.total_dmg > 0 || encounter.total_heal > 0) {
-                        warn!("Capture appears stalled ({}s); requesting restart", since.as_secs());
-                        crate::packets::packet_capture::request_restart();
-                    }
-                }
-            }
-        });
-    }
-
     // 2. Use the channel to receive packets back and process them
     while let Some((op, data)) = rx.recv().await {
-        // mark last receive time
-        {
-            let mut locked = last_rx_time.lock().unwrap();
-            *locked = Instant::now();
-        }
-        // notify frontend listeners that a packet was received
-        let _ = app_handle.emit("packet_rx", ());
         {
             let state = app_handle.state::<EncounterMutex>();
             let encounter = state.lock().unwrap();
@@ -127,26 +94,15 @@ pub async fn start(app_handle: AppHandle) {
                 }
             }
             packets::opcodes::Pkt::SyncServerTime => {
-                let sync_server_time = match blueprotobuf::SyncServerTime::decode(Bytes::from(data)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!("Error decoding SyncServerTime.. ignoring: {e}");
-                        continue;
-                    }
-                };
-                if let (Some(client_ms), Some(server_ms)) = (sync_server_time.client_milliseconds, sync_server_time.server_milliseconds) {
-                    let encounter_state = app_handle.state::<EncounterMutex>();
-                    let mut encounter_state = encounter_state.lock().unwrap();
-                    let new_offset = (server_ms as i128) - (client_ms as i128);
-                    // Smooth the offset to reduce jitter/drift
-                    if encounter_state.server_time_offset_ms == 0 {
-                        encounter_state.server_time_offset_ms = new_offset;
-                    } else {
-                        // weighted average: 80% old, 20% new
-                        encounter_state.server_time_offset_ms =
-                            ((encounter_state.server_time_offset_ms * 8) + (new_offset * 2)) / 10;
-                    }
-                }
+                let _sync_server_time =
+                    match blueprotobuf::SyncServerTime::decode(Bytes::from(data)) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!("Error decoding SyncServerTime.. ignoring: {e}");
+                            continue;
+                        }
+                    };
+                // skipped; no timing adjustments applied
             }
             packets::opcodes::Pkt::SyncToMeDeltaInfo => {
                 // todo: fix this, attrs dont include name, no idea why
