@@ -1134,23 +1134,13 @@ pub async fn process_packet(
 ) {
     let mut debug_ctr = 0;
     while packets_reader.remaining() > 0 {
-        let Ok(packet_size) = packets_reader.peek_u32() else { break };
-        if packet_size < 6 {
-            break;
-        }
-        if packets_reader.remaining() < packet_size as usize {
-            // Not enough data yet for a full frame; wait for more
-            break;
-        }
+        let packet_size = match packets_reader.peek_u32() { Ok(v) => v, Err(_) => break };
+        if packet_size < 6 { return; }
+        if packets_reader.remaining() < packet_size as usize { return; }
 
-        let Ok(frame_bytes) = packets_reader.read_bytes(packet_size as usize) else { break };
-        let mut reader = BinaryReader::from(frame_bytes);
-        if reader.read_u32().is_err() {
-            continue;
-        }
-        let Ok(packet_type) = reader.read_u16() else {
-            continue;
-        };
+        let mut reader = BinaryReader::from(packets_reader.read_bytes(packet_size as usize).unwrap());
+        reader.read_u32().expect("TODO: panic message");
+        let packet_type = reader.read_u16().unwrap();
         let is_zstd_compressed = packet_type & 0x8000;
         let msg_type_id = packet_type & 0x7fff;
 
@@ -1158,14 +1148,11 @@ pub async fn process_packet(
         match packets::opcodes::FragmentType::from(msg_type_id) {
             FragmentType::Notify => {
                 // info!("{debug_ctr} Notify {:?}", reader.cursor.get_ref());
-                let Ok(service_uuid) = reader.read_u64() else { continue };
-                let _stub_id = reader.read_u32().ok();
-                let Ok(method_id) = reader.read_u32() else { continue };
+                let service_uuid = reader.read_u64().unwrap();
+                let stub_id = reader.read_u32().unwrap();
+                let method_id = reader.read_u32().unwrap();
 
-                if service_uuid != 0x0000000063335342 {
-                    // Not a BlueProtocol fragment we care about, skip this frame
-                    continue;
-                }
+                if service_uuid != 0x0000000063335342 { return; }
 
                 let msg_payload = reader.read_remaining();
                 let mut tcp_fragment_vec = msg_payload.to_vec();
@@ -1173,8 +1160,7 @@ pub async fn process_packet(
                     if let Ok(decoded) = zstd::decode_all(tcp_fragment_vec.as_slice()) {
                         tcp_fragment_vec = decoded;
                     } else {
-                        // faulty TCP packet, skip and continue parsing others
-                        continue;
+                        return; // faulty TCP packet
                     }
                 }
 
@@ -1206,7 +1192,7 @@ pub async fn process_packet(
                     packets_reader = BinaryReader::from(Vec::from(nested_packet));
                 }
             }
-            _ => continue,
+            _ => return,
         }
     }
 }

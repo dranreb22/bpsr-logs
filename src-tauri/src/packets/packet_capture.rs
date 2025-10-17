@@ -17,7 +17,7 @@ static RESTART_SENDER: OnceCell<watch::Sender<bool>> = OnceCell::new();
 
 pub fn start_capture() -> tokio::sync::mpsc::Receiver<(packets::opcodes::Pkt, Vec<u8>)> {
     let (packet_sender, packet_receiver) =
-        tokio::sync::mpsc::channel::<(packets::opcodes::Pkt, Vec<u8>)>(128);
+        tokio::sync::mpsc::channel::<(packets::opcodes::Pkt, Vec<u8>)>(1);
     let (restart_sender, mut restart_receiver) = watch::channel(false);
     RESTART_SENDER.set(restart_sender.clone()).ok();
     tauri::async_runtime::spawn(async move {
@@ -173,11 +173,17 @@ async fn read_packets(
         }
 
         // info!("{}", line!());
-        // Always cache the segment; the assembler will stitch contiguous data when possible.
-        tcp_reassembler.cache.insert(
-            tcp_packet.sequence_number() as usize,
-            Vec::from(tcp_packet.payload()),
-        );
+        if tcp_reassembler
+            .next_seq
+            .unwrap()
+            .saturating_sub(tcp_packet.sequence_number() as usize)
+            == 0
+        {
+            tcp_reassembler.cache.insert(
+                tcp_packet.sequence_number() as usize,
+                Vec::from(tcp_packet.payload()),
+            );
+        }
 
         // info!("{}", line!());
         let mut i = 0;
