@@ -52,7 +52,7 @@
     },
     "plugins": {
         "updater": {
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlCQUFFQzBEMDU4MDI2QTAKUldTZ0pvQUZEZXlxbTN4blMwUW8yMU1LUjdabndOTXJWdlIyV3JjdkZoZHhQblF3S3N3ZVlsSmwK",
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxOTAwRUE3M0Y0QUUzRjAKUldUdzQwby9wdzZRZ1ZGK0VXZXlkSXN2ZWhIV1cxT3ExQUZvRVplQWVSKzVqY2d2eHh3YmVabk8K",
             "endpoints": [
                 "https://github.com/dranreb22/bpsr-logs/releases/latest/download/latest.json"
             ],
